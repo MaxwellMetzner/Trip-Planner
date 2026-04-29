@@ -79,6 +79,32 @@ button {
   gap: 24px;
 }
 
+.site-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 18px 24px;
+  text-align: center;
+}
+
+.site-footer-label {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.site-footer-link {
+  color: var(--accent-strong);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.site-footer-link:hover,
+.site-footer-link:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
 .panel,
 .map-panel {
   position: relative;
@@ -1331,6 +1357,10 @@ button {
   .summary-head-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .site-footer {
+    flex-direction: column;
   }
 
   .wizard-footer {

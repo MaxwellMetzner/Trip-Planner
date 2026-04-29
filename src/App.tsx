@@ -1803,6 +1803,13 @@ function App() {
         onClose={() => setReplaceSlotId(null)}
         onSelectAlternative={handleSwapAlternative}
       />
+
+      <footer className="site-footer panel">
+        <span className="site-footer-label">More projects and writing</span>
+        <a className="site-footer-link" href="https://maxwellmetzner.github.io/">
+          maxwellmetzner.github.io
+        </a>
+      </footer>
     </div>
   );
 }
