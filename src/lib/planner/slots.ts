@@ -41,7 +41,7 @@ function createMealSlots(request: TripPlanningRequest, route: RouteSummary): Sto
     const targetMinutes = getTargetMinutesForMealWindow(window, departure, route.durationSeconds);
     const targetOffsetSeconds = clamp(targetMinutes * 60, route.durationSeconds * 0.15, route.durationSeconds * 0.92);
 
-    return createSlot(window.category, targetOffsetSeconds, 30 * 60, index);
+    return createSlot(window.category, targetOffsetSeconds, 30 * 60, index, request);
   });
 }
 
@@ -84,33 +84,49 @@ function createCategorySlots(request: TripPlanningRequest, route: RouteSummary, 
       return;
     }
 
-    const targets = spreadTargets(category, count, route.durationSeconds, request.preferences.idealBreakCadenceMinutes);
+    const targets = spreadTargets(category, count, route.durationSeconds, request.preferences.idealBreakCadenceMinutes, request.preferences.energyCurve);
     targets.forEach((target, index) => {
-      slots.push(createSlot(category, target, getSearchWindowSeconds(category), index));
+      slots.push(createSlot(category, target, getSearchWindowSeconds(category), index, request));
     });
   });
 
   return slots;
 }
 
-function spreadTargets(category: Category, count: number, durationSeconds: number, idealBreakCadenceMinutes: number): number[] {
+function spreadTargets(
+  category: Category,
+  count: number,
+  durationSeconds: number,
+  idealBreakCadenceMinutes: number,
+  energyCurve: TripPlanningRequest['preferences']['energyCurve'],
+): number[] {
   if (count === 1) {
+    const curveMultiplier = energyCurve === 'early_peak' ? 0.86 : energyCurve === 'late_riser' ? 1.1 : 1;
     if (category === 'coffee' || category === 'rest_stop') {
-      const target = Math.min(durationSeconds * 0.55, idealBreakCadenceMinutes * 60);
+      const target = Math.min(durationSeconds * 0.55, idealBreakCadenceMinutes * 60) * curveMultiplier;
       return [clamp(target, durationSeconds * 0.18, durationSeconds * 0.9)];
     }
 
-    return [durationSeconds * 0.58];
+    return [clamp(durationSeconds * 0.58 * curveMultiplier, durationSeconds * 0.18, durationSeconds * 0.92)];
   }
 
-  const start = category === 'coffee' || category === 'rest_stop' ? 0.2 : 0.25;
-  const end = category === 'coffee' || category === 'rest_stop' ? 0.82 : 0.78;
+  const earlyShift = energyCurve === 'early_peak' ? -0.06 : energyCurve === 'late_riser' ? 0.06 : 0;
+  const start = clamp((category === 'coffee' || category === 'rest_stop' ? 0.2 : 0.25) + earlyShift, 0.14, 0.42);
+  const end = clamp((category === 'coffee' || category === 'rest_stop' ? 0.82 : 0.78) + earlyShift, 0.58, 0.9);
   const span = end - start;
 
   return Array.from({ length: count }, (_, index) => durationSeconds * (start + (span * index) / (count - 1)));
 }
 
-function createSlot(category: Category, targetOffsetSeconds: number, searchWindowSeconds: number, index: number): StopSlot {
+function createSlot(
+  category: Category,
+  targetOffsetSeconds: number,
+  searchWindowSeconds: number,
+  index: number,
+  request?: TripPlanningRequest,
+): StopSlot {
+  const dwellMinutes = getAdjustedDwellMinutes(category, request?.preferences.stopPacing ?? 'balanced');
+
   return {
     id: uid(`${category}_${index}`),
     kind: categoryToSlotKind(category),
@@ -119,10 +135,10 @@ function createSlot(category: Category, targetOffsetSeconds: number, searchWindo
     targetArrivalOffsetSeconds: Math.round(targetOffsetSeconds),
     searchWindowStartOffsetSeconds: Math.max(0, Math.round(targetOffsetSeconds - searchWindowSeconds)),
     searchWindowEndOffsetSeconds: Math.round(targetOffsetSeconds + searchWindowSeconds),
-    expectedDwellMinutes: CATEGORY_DWELL_MINUTES[category],
+    expectedDwellMinutes: dwellMinutes,
     daylightSensitive: CATEGORY_DAYLIGHT_SENSITIVE.has(category),
     hardConstraints: category === 'hike' ? ['daylight_required'] : [],
-    softConstraints: category === 'coffee' ? ['near cadence target'] : [],
+    softConstraints: buildSoftConstraints(category, request),
   };
 }
 
@@ -187,4 +203,41 @@ function getSearchWindowSeconds(category: Category): number {
   }
 
   return 20 * 60;
+}
+
+function getAdjustedDwellMinutes(category: Category, stopPacing: TripPlanningRequest['preferences']['stopPacing']): number {
+  const base = CATEGORY_DWELL_MINUTES[category];
+  const factor = stopPacing === 'quick_hits' ? 0.78 : stopPacing === 'linger' ? 1.22 : 1;
+  const minimum = category === 'gas' || category === 'rest_stop' ? 10 : category === 'coffee' ? 15 : 25;
+  return Math.round(clamp(base * factor, minimum, base + 45));
+}
+
+function buildSoftConstraints(category: Category, request?: TripPlanningRequest): string[] {
+  const constraints: string[] = [];
+
+  if (category === 'coffee') {
+    constraints.push('near cadence target');
+  }
+
+  if (!request) {
+    return constraints;
+  }
+
+  if ((category === 'breakfast' || category === 'lunch' || category === 'dinner') && request.preferences.foodPriority >= 70) {
+    constraints.push('strong local food preference');
+  }
+
+  if ((category === 'scenic_overlook' || category === 'hike' || category === 'attraction') && request.preferences.sceneryPriority >= 70) {
+    constraints.push('scenery-forward slot');
+  }
+
+  if ((category === 'rest_stop' || category === 'gas' || category === 'ev_charging') && request.preferences.comfortPriority >= 70) {
+    constraints.push('comfort buffer');
+  }
+
+  if (category === 'surprise' && request.preferences.surprisePriority >= 60) {
+    constraints.push('planned wildcard');
+  }
+
+  return constraints;
 }

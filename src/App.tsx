@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useState } from 'react';
+import { startTransition, useEffect, useRef, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   BatteryCharging,
@@ -7,18 +7,28 @@ import {
   Compass,
   Coffee,
   Fuel,
+  Gauge,
+  ListChecks,
   Mountain,
+  Minus,
+  Plus,
+  RefreshCw,
   Route,
+  SlidersHorizontal,
   Sparkles,
   Sun,
   Trees,
   Utensils,
+  Users,
   Wallet,
 } from 'lucide-react';
 import { MapPanel } from './components/MapPanel';
+import { MeterBar } from './components/MeterBar';
+import { GoogleTroubleshootingPanel } from './components/GoogleTroubleshootingPanel';
 import { PlaceField } from './components/PlaceField';
 import { ReplaceDrawer } from './components/ReplaceDrawer';
 import { SavedTripsPanel } from './components/SavedTripsPanel';
+import { getGoogleErrorMessage } from './lib/googleErrors';
 import { loadGoogleMapsApi } from './lib/googleLoader';
 import { pinRecommendation, planTrip, replaceRecommendation, skipRecommendation } from './lib/planner/engine';
 import {
@@ -29,7 +39,7 @@ import {
 } from './lib/planner/config';
 import { GooglePlannerProvider } from './lib/providers/googleProvider';
 import { MockPlannerProvider } from './lib/providers/mockProvider';
-import { deleteTrip, deriveLearnedPreferences, loadPreferences, loadSavedTrips, savePreferences, saveTrip } from './lib/storage';
+import { deleteTrip, deriveLearnedPreferences, loadPreferences, loadSavedTripsSnapshot, savePreferences, saveTrip } from './lib/storage';
 import {
   formatClock,
   formatDateLabel,
@@ -38,7 +48,17 @@ import {
   parseDateTimeLocal,
   toDateTimeLocalInputValue,
 } from './lib/utils';
-import type { Category, PlannedTrip, PlaceCandidate, PreferenceProfile, TripPlanningRequest } from './types/trip';
+import type {
+  Category,
+  EnergyCurve,
+  PlannedTrip,
+  PlaceCandidate,
+  PreferenceProfile,
+  StopPacing,
+  TravelParty,
+  TripPlanningRequest,
+  TripTemperament,
+} from './types/trip';
 
 const OPTIONAL_CATEGORIES: Category[] = [
   'coffee',
@@ -50,6 +70,8 @@ const OPTIONAL_CATEGORIES: Category[] = [
   'ev_charging',
   'surprise',
 ];
+
+const TUNE_CATEGORIES: Category[] = ['coffee', 'rest_stop', 'scenic_overlook', 'attraction', 'surprise'];
 
 const CATEGORY_ICONS: Record<Category, LucideIcon> = {
   breakfast: Utensils,
@@ -65,61 +87,153 @@ const CATEGORY_ICONS: Record<Category, LucideIcon> = {
   surprise: Sparkles,
 };
 
+const PARTY_LABELS: Record<TravelParty, string> = {
+  solo: 'Solo',
+  couple: 'Couple',
+  family: 'Family',
+  friends: 'Friends',
+};
+
+const ENERGY_LABELS: Record<EnergyCurve, string> = {
+  early_peak: 'Early peak',
+  steady: 'Steady',
+  late_riser: 'Late riser',
+};
+
+const PACING_LABELS: Record<StopPacing, string> = {
+  quick_hits: 'Quick hits',
+  balanced: 'Balanced',
+  linger: 'Linger',
+};
+
+const TEMPERAMENT_LABELS: Record<TripTemperament, string> = {
+  efficient: 'Efficient',
+  balanced: 'Balanced',
+  local_texture: 'Local texture',
+  scenic_collector: 'Scenic collector',
+  comfort_buffer: 'Comfort buffer',
+};
+
 const PRESETS: Array<{
   label: string;
   summary: string;
   apply: (request: TripPlanningRequest) => TripPlanningRequest;
 }> = [
   {
-    label: 'Fast lunch run',
-    summary: 'One meal stop, one coffee, low detour pressure.',
+    label: 'Focused errand',
+    summary: 'Low detour, quick breaks, one reliable meal.',
     apply: (request) => ({
       ...request,
       itineraryMode: 'fastest_reasonable',
       mealStopCount: 1,
-      activeCategories: ['coffee'],
-      desiredStopsByCategory: { coffee: 1 },
+      activeCategories: ['coffee', 'rest_stop'],
+      desiredStopsByCategory: { coffee: 1, rest_stop: 1 },
       detourToleranceMinutes: 12,
-      categoryImportance: { coffee: 'medium', lunch: 'high' },
+      categoryImportance: { coffee: 'medium', rest_stop: 'medium', lunch: 'high' },
+      preferences: {
+        ...request.preferences,
+        tripTemperament: 'efficient',
+        stopPacing: 'quick_hits',
+        energyCurve: 'steady',
+        foodPriority: 48,
+        sceneryPriority: 24,
+        comfortPriority: 58,
+        surprisePriority: 12,
+        quietPriority: 34,
+        idealBreakCadenceMinutes: 150,
+      },
     }),
   },
   {
-    label: 'Scenic arc',
-    summary: 'Outdoor-forward trip with a stronger attraction appetite.',
+    label: 'Scenic collector',
+    summary: 'Viewpoints, trails, and memorable detours are allowed to win.',
     apply: (request) => ({
       ...request,
       itineraryMode: 'experience_focused',
       mealStopCount: 1,
-      activeCategories: ['coffee', 'scenic_overlook', 'hike', 'attraction'],
-      desiredStopsByCategory: { coffee: 1, scenic_overlook: 1, hike: 1, attraction: 1 },
-      detourToleranceMinutes: 26,
+      activeCategories: ['coffee', 'scenic_overlook', 'hike', 'attraction', 'surprise'],
+      desiredStopsByCategory: { coffee: 1, scenic_overlook: 2, hike: 1, attraction: 1, surprise: 1 },
+      detourToleranceMinutes: 30,
       categoryImportance: {
         coffee: 'medium',
         scenic_overlook: 'high',
         hike: 'high',
-        attraction: 'medium',
+        attraction: 'high',
+        surprise: 'medium',
         lunch: 'medium',
+      },
+      preferences: {
+        ...request.preferences,
+        tripTemperament: 'scenic_collector',
+        stopPacing: 'linger',
+        energyCurve: 'early_peak',
+        foodPriority: 52,
+        sceneryPriority: 94,
+        comfortPriority: 44,
+        surprisePriority: 54,
+        quietPriority: 58,
+      },
+    }),
+  },
+  {
+    label: 'Local texture',
+    summary: 'Independent food, quieter stops, and a little planned serendipity.',
+    apply: (request) => ({
+      ...request,
+      itineraryMode: 'food_focused',
+      mealStopCount: 2,
+      activeCategories: ['coffee', 'attraction', 'surprise', 'scenic_overlook'],
+      desiredStopsByCategory: { coffee: 1, attraction: 1, surprise: 1, scenic_overlook: 1 },
+      detourToleranceMinutes: 22,
+      categoryImportance: {
+        coffee: 'high',
+        attraction: 'medium',
+        surprise: 'high',
+        scenic_overlook: 'medium',
+        lunch: 'high',
+        dinner: 'medium',
+      },
+      preferences: {
+        ...request.preferences,
+        tripTemperament: 'local_texture',
+        stopPacing: 'balanced',
+        foodPriority: 90,
+        sceneryPriority: 56,
+        comfortPriority: 42,
+        surprisePriority: 72,
+        quietPriority: 82,
+        avoidChains: true,
       },
     }),
   },
   {
     label: 'Family buffer',
-    summary: 'More predictable breaks and kid-friendly weighting.',
+    summary: 'Predictable breaks, shorter gaps, kid-friendly weighting.',
     apply: (request) => ({
       ...request,
       itineraryMode: 'best_overall',
       mealStopCount: 2,
-      activeCategories: ['coffee', 'rest_stop', 'attraction'],
-      desiredStopsByCategory: { coffee: 1, rest_stop: 1, attraction: 1 },
+      activeCategories: ['coffee', 'rest_stop', 'attraction', 'gas'],
+      desiredStopsByCategory: { coffee: 1, rest_stop: 2, attraction: 1, gas: 1 },
       detourToleranceMinutes: 16,
       preferences: {
         ...request.preferences,
+        travelParty: 'family',
+        tripTemperament: 'comfort_buffer',
+        stopPacing: 'quick_hits',
+        energyCurve: 'steady',
         childFriendly: true,
         idealBreakCadenceMinutes: 120,
+        foodPriority: 56,
+        sceneryPriority: 40,
+        comfortPriority: 92,
+        surprisePriority: 18,
+        quietPriority: 50,
       },
       categoryImportance: {
         coffee: 'medium',
         rest_stop: 'high',
+        gas: 'medium',
         attraction: 'medium',
         lunch: 'high',
         dinner: 'medium',
@@ -128,7 +242,7 @@ const PRESETS: Array<{
   },
 ];
 
-type WizardStepId = 'locations' | 'travel' | 'meals' | 'stops' | 'preferences' | 'review';
+type WizardStepId = 'locations' | 'temperament' | 'travel' | 'meals' | 'stops' | 'preferences' | 'review';
 
 const WIZARD_STEPS: Array<{
   id: WizardStepId;
@@ -145,6 +259,14 @@ const WIZARD_STEPS: Array<{
     title: 'Where does the trip begin and end?',
     description: 'Start with the route itself, then layer timing and stop preferences on top of it.',
     icon: Route,
+  },
+  {
+    id: 'temperament',
+    label: 'Trip DNA',
+    caption: 'Set the feel',
+    title: 'What kind of trip should this feel like?',
+    description: 'Choose the temperament first, then tune the priorities that make one road trip feel different from another.',
+    icon: Gauge,
   },
   {
     id: 'travel',
@@ -188,31 +310,110 @@ const WIZARD_STEPS: Array<{
   },
 ];
 
-function App() {
-  const initialTrips = loadSavedTrips();
-  const initialPreferences = deriveLearnedPreferences(initialTrips, loadPreferences());
-  const initialRequest = createDefaultTripRequest();
-  initialRequest.preferences = initialPreferences;
-  initialRequest.departureAt = toDateTimeLocalInputValue(initialRequest.departureAt);
+type FingerprintMetric = {
+  label: string;
+  value: number;
+};
 
-  const [preferences, setPreferences] = useState<PreferenceProfile>(initialPreferences);
-  const [savedTrips, setSavedTrips] = useState<PlannedTrip[]>(initialTrips);
-  const [request, setRequest] = useState<TripPlanningRequest>(initialRequest);
+type AppBootstrapState = {
+  providerPreference: 'auto' | 'google' | 'demo';
+  preferences: PreferenceProfile;
+  request: TripPlanningRequest;
+  savedTrips: PlannedTrip[];
+  savedTripsNotice: string | null;
+};
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function buildTripFingerprint(request: TripPlanningRequest, preferences: PreferenceProfile): FingerprintMetric[] {
+  const optionalStopCount = request.activeCategories.reduce((sum, category) => sum + (request.desiredStopsByCategory[category] ?? 1), 0);
+
+  return [
+    {
+      label: 'Pace',
+      value: clampPercent(100 - request.detourToleranceMinutes * 1.8 + (preferences.stopPacing === 'quick_hits' ? 12 : preferences.stopPacing === 'linger' ? -10 : 0)),
+    },
+    {
+      label: 'Flavor',
+      value: clampPercent(preferences.foodPriority + (preferences.avoidChains ? 8 : 0)),
+    },
+    {
+      label: 'Scenery',
+      value: clampPercent(preferences.sceneryPriority + (request.activeCategories.includes('scenic_overlook') ? 8 : 0)),
+    },
+    {
+      label: 'Comfort',
+      value: clampPercent(preferences.comfortPriority + (preferences.childFriendly ? 10 : 0)),
+    },
+    {
+      label: 'Wildcard',
+      value: clampPercent(preferences.surprisePriority + optionalStopCount * 3),
+    },
+  ];
+}
+
+function priorityLabel(value: number): string {
+  if (value >= 76) {
+    return 'High';
+  }
+
+  if (value >= 46) {
+    return 'Medium';
+  }
+
+  return 'Low';
+}
+
+function formatExpiredTripNotice(count: number): string {
+  return `${count} expired Google-backed saved trip${count === 1 ? ' was' : 's were'} removed from the archive.`;
+}
+
+function isGoogleIssueMessage(message: string | null): boolean {
+  return Boolean(message && message.startsWith('Google'));
+}
+
+function buildInitialAppState(): AppBootstrapState {
+  const savedTripsSnapshot = loadSavedTripsSnapshot();
+  const savedTrips = savedTripsSnapshot.trips;
+  const preferences = deriveLearnedPreferences(savedTrips, loadPreferences());
+  const request = createDefaultTripRequest();
+  request.preferences = preferences;
+  request.departureAt = toDateTimeLocalInputValue(request.departureAt);
+
+  return {
+    providerPreference: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ? 'auto' : 'demo',
+    preferences,
+    request,
+    savedTrips,
+    savedTripsNotice: savedTripsSnapshot.expiredTripCount > 0 ? formatExpiredTripNotice(savedTripsSnapshot.expiredTripCount) : null,
+  };
+}
+
+function App() {
+  const [appBootstrap] = useState<AppBootstrapState>(buildInitialAppState);
+
+  const [preferences, setPreferences] = useState<PreferenceProfile>(appBootstrap.preferences);
+  const [savedTrips, setSavedTrips] = useState<PlannedTrip[]>(appBootstrap.savedTrips);
+  const [savedTripsNotice, setSavedTripsNotice] = useState<string | null>(appBootstrap.savedTripsNotice);
+  const [request, setRequest] = useState<TripPlanningRequest>(appBootstrap.request);
   const [currentPlan, setCurrentPlan] = useState<PlannedTrip | null>(null);
+  const [showInputBuilder, setShowInputBuilder] = useState(true);
   const [planningState, setPlanningState] = useState<'idle' | 'planning'>('idle');
-  const [providerPreference, setProviderPreference] = useState<'auto' | 'google' | 'demo'>(
-    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ? 'auto' : 'demo',
-  );
+  const [providerPreference, setProviderPreference] = useState<'auto' | 'google' | 'demo'>(appBootstrap.providerPreference);
   const [googleReady, setGoogleReady] = useState(false);
   const [googleError, setGoogleError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [replaceSlotId, setReplaceSlotId] = useState<string | null>(null);
   const [activeStepId, setActiveStepId] = useState<WizardStepId>('locations');
+  const itinerarySummaryRef = useRef<HTMLElement | null>(null);
+  const pendingPlanScrollRef = useRef(false);
 
   const googleKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
   const wantsGoogle = providerPreference !== 'demo' && Boolean(googleKey);
-  const effectiveProviderMode = providerPreference === 'google' ? (googleReady ? 'google' : 'google') : wantsGoogle && googleReady ? 'google' : 'demo';
+  const effectiveProviderMode = providerPreference === 'google' ? 'google' : wantsGoogle && googleReady ? 'google' : 'demo';
   const replaceRecommendationTarget = currentPlan?.recommendations.find((item) => item.slotId === replaceSlotId) ?? null;
   const replaceSlotTarget = currentPlan?.slots.find((item) => item.id === replaceSlotId) ?? null;
   const activeStepIndex = Math.max(0, WIZARD_STEPS.findIndex((step) => step.id === activeStepId));
@@ -226,17 +427,37 @@ function App() {
   const departureLabel = request.departureAt ? formatDateLabel(parseDateTimeLocal(request.departureAt)) : 'Choose a departure time';
   const mealWindowSummary = (['breakfast', 'lunch', 'dinner'] as const)
     .map((mealKey) => `${CATEGORY_LABELS[mealKey]} ${request.mealWindows[mealKey].start}-${request.mealWindows[mealKey].end}`)
-    .join(' · ');
+    .join(' / ');
   const activeCategorySummary =
     request.activeCategories.length > 0
       ? request.activeCategories.map((category) => CATEGORY_LABELS[category]).join(', ')
       : 'No optional stop categories selected yet.';
   const cuisineSummary = preferences.cuisines.length > 0 ? preferences.cuisines.join(', ') : 'No cuisine hints yet';
+  const tripFingerprint = buildTripFingerprint(request, preferences);
+  const temperamentLabel = TEMPERAMENT_LABELS[preferences.tripTemperament];
+  const builderCollapsed = Boolean(currentPlan) && !showInputBuilder;
+  const googleTroubleshootingIssue =
+    providerPreference === 'demo' ? null : isGoogleIssueMessage(errorMessage) ? errorMessage : googleError;
 
   useEffect(() => {
     savePreferences(preferences);
     setRequest((previous) => ({ ...previous, preferences }));
   }, [preferences]);
+
+  useEffect(() => {
+    if (!currentPlan || !pendingPlanScrollRef.current) {
+      return undefined;
+    }
+
+    pendingPlanScrollRef.current = false;
+    const frameId = window.requestAnimationFrame(() => {
+      itinerarySummaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [currentPlan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -257,7 +478,7 @@ function App() {
       .catch((error: Error) => {
         if (!cancelled) {
           setGoogleReady(false);
-          setGoogleError(error.message);
+          setGoogleError(getGoogleErrorMessage(error) ?? error.message);
         }
       });
 
@@ -310,7 +531,45 @@ function App() {
     });
   }
 
+  function boostCategory(category: Category) {
+    setRequest((previous) => {
+      const active = previous.activeCategories.includes(category);
+      const current = active ? previous.desiredStopsByCategory[category] ?? 1 : 0;
+
+      return {
+        ...previous,
+        activeCategories: active ? previous.activeCategories : [...previous.activeCategories, category],
+        desiredStopsByCategory: {
+          ...previous.desiredStopsByCategory,
+          [category]: Math.max(1, Math.min(3, current + 1)),
+        },
+        categoryImportance: {
+          ...previous.categoryImportance,
+          [category]: 'high',
+        },
+      };
+    });
+  }
+
+  function reduceCategory(category: Category) {
+    setRequest((previous) => {
+      const current = previous.desiredStopsByCategory[category] ?? 1;
+      const nextCount = current - 1;
+
+      return {
+        ...previous,
+        activeCategories: nextCount <= 0 ? previous.activeCategories.filter((value) => value !== category) : previous.activeCategories,
+        desiredStopsByCategory: {
+          ...previous.desiredStopsByCategory,
+          [category]: Math.max(0, nextCount),
+        },
+      };
+    });
+  }
+
   async function handlePlanTrip() {
+    const shouldScrollToPlan = showInputBuilder;
+    pendingPlanScrollRef.current = false;
     setPlanningState('planning');
     setErrorMessage(null);
     setStatusMessage('');
@@ -328,12 +587,15 @@ function App() {
       };
       const plan = await planTrip(normalizedRequest, provider);
 
+      pendingPlanScrollRef.current = shouldScrollToPlan;
       setStatusMessage('Itinerary ready. Review and fine-tune stops below.');
+      setShowInputBuilder(false);
       startTransition(() => {
         setCurrentPlan(plan);
       });
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Trip planning failed.');
+      const fallbackMessage = error instanceof Error ? error.message : 'Trip planning failed.';
+      setErrorMessage(getGoogleErrorMessage(error) ?? fallbackMessage);
     } finally {
       setPlanningState('idle');
     }
@@ -356,9 +618,12 @@ function App() {
       updatedAt: new Date().toISOString(),
     };
 
-    const nextTrips = saveTrip(tripToSave);
+    const { trips: nextTrips, expiredTripCount } = saveTrip(tripToSave);
     setSavedTrips(nextTrips);
     setPreferences((previous) => deriveLearnedPreferences(nextTrips, previous));
+    if (expiredTripCount > 0) {
+      setSavedTripsNotice(formatExpiredTripNotice(expiredTripCount));
+    }
     setStatusMessage('Trip saved locally for this browser.');
   }
 
@@ -372,6 +637,7 @@ function App() {
       departureAt: toDateTimeLocalInputValue(trip.request.departureAt),
       preferences: nextPreferences,
     });
+    setShowInputBuilder(false);
     setActiveStepId('review');
     setStatusMessage('Loaded a saved itinerary.');
   }
@@ -407,6 +673,7 @@ function App() {
   }
 
   function goToStep(stepId: WizardStepId) {
+    setShowInputBuilder(true);
     setActiveStepId(stepId);
   }
 
@@ -447,15 +714,6 @@ function App() {
       case 'locations':
         return (
           <div className="wizard-stack">
-            <div className="preset-row">
-              {PRESETS.map((preset) => (
-                <button key={preset.label} className="preset-card" type="button" onClick={() => applyPreset(preset.label)}>
-                  <strong>{preset.label}</strong>
-                  <span>{preset.summary}</span>
-                </button>
-              ))}
-            </div>
-
             <div className="form-grid two-column">
               <PlaceField
                 id="origin"
@@ -487,6 +745,148 @@ function App() {
                   <span>Plan as a same-day out-and-back route</span>
                 </div>
               </label>
+            </div>
+          </div>
+        );
+
+      case 'temperament':
+        return (
+          <div className="wizard-stack">
+            <div className="preset-row temperament-presets">
+              {PRESETS.map((preset) => (
+                <button key={preset.label} className="preset-card" type="button" onClick={() => applyPreset(preset.label)}>
+                  <strong>{preset.label}</strong>
+                  <span>{preset.summary}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="settings-grid">
+              <article className="settings-card">
+                <div className="settings-head">
+                  <Users size={18} />
+                  <div>
+                    <h3>Traveler shape</h3>
+                    <p>Party, energy, and stop rhythm.</p>
+                  </div>
+                </div>
+
+                <label className="field-shell compact-field">
+                  <span className="field-label">Temperament</span>
+                  <select
+                    className="select-input"
+                    value={preferences.tripTemperament}
+                    onChange={(event) => updatePreferences({ tripTemperament: event.target.value as TripTemperament })}
+                  >
+                    {(Object.keys(TEMPERAMENT_LABELS) as TripTemperament[]).map((value) => (
+                      <option value={value} key={value}>
+                        {TEMPERAMENT_LABELS[value]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="segmented-grid">
+                  {(Object.keys(PARTY_LABELS) as TravelParty[]).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`segmented-button ${preferences.travelParty === value ? 'active' : ''}`}
+                      onClick={() =>
+                        updatePreferences({
+                          travelParty: value,
+                          childFriendly: value === 'family' ? true : preferences.childFriendly,
+                        })
+                      }
+                    >
+                      {PARTY_LABELS[value]}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="dual-field-row">
+                  <label className="field-shell compact-field">
+                    <span className="field-label">Energy curve</span>
+                    <select
+                      className="select-input"
+                      value={preferences.energyCurve}
+                      onChange={(event) => updatePreferences({ energyCurve: event.target.value as EnergyCurve })}
+                    >
+                      {(Object.keys(ENERGY_LABELS) as EnergyCurve[]).map((value) => (
+                        <option value={value} key={value}>
+                          {ENERGY_LABELS[value]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="field-shell compact-field">
+                    <span className="field-label">Stop rhythm</span>
+                    <select
+                      className="select-input"
+                      value={preferences.stopPacing}
+                      onChange={(event) => updatePreferences({ stopPacing: event.target.value as StopPacing })}
+                    >
+                      {(Object.keys(PACING_LABELS) as StopPacing[]).map((value) => (
+                        <option value={value} key={value}>
+                          {PACING_LABELS[value]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </article>
+
+              <article className="settings-card">
+                <div className="settings-head">
+                  <SlidersHorizontal size={18} />
+                  <div>
+                    <h3>Priority mix</h3>
+                    <p>Food, scenery, comfort, surprise, and quiet places.</p>
+                  </div>
+                </div>
+
+                <div className="priority-slider-list">
+                  {[
+                    ['foodPriority', 'Local food'],
+                    ['sceneryPriority', 'Scenery'],
+                    ['comfortPriority', 'Comfort'],
+                    ['surprisePriority', 'Surprise'],
+                    ['quietPriority', 'Quiet gems'],
+                  ].map(([key, label]) => {
+                    const value = preferences[key as keyof PreferenceProfile] as number;
+
+                    return (
+                      <label className="field-shell compact-field" htmlFor={key} key={key}>
+                        <span className="priority-label-row">
+                          <span className="field-label">{label}</span>
+                          <span className="inline-value">{priorityLabel(value)}</span>
+                        </span>
+                        <input
+                          id={key}
+                          className="range-input"
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={value}
+                          onChange={(event) => updatePreferences({ [key]: Number(event.target.value) } as Partial<PreferenceProfile>)}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </article>
+            </div>
+
+            <div className="fingerprint-panel">
+              {tripFingerprint.map((metric) => (
+                <article className="fingerprint-card" key={metric.label}>
+                  <span className="stats-label">{metric.label}</span>
+                  <strong>{metric.value}</strong>
+                  <MeterBar className="mini-meter" value={metric.value} decorative />
+                </article>
+              ))}
             </div>
           </div>
         );
@@ -856,6 +1256,14 @@ function App() {
                 </p>
               </article>
               <article className="review-card">
+                <span className="stats-label">Trip DNA</span>
+                <strong>{temperamentLabel}</strong>
+                <p>
+                  {PARTY_LABELS[preferences.travelParty]} trip, {ENERGY_LABELS[preferences.energyCurve].toLowerCase()} energy,
+                  {` ${PACING_LABELS[preferences.stopPacing].toLowerCase()} stops.`}
+                </p>
+              </article>
+              <article className="review-card">
                 <span className="stats-label">Meals</span>
                 <strong>
                   {request.mealStopCount} meal stop{request.mealStopCount === 1 ? '' : 's'}
@@ -892,16 +1300,13 @@ function App() {
 
   return (
     <div className="app-shell">
-      <div className="ambient ambient-left" />
-      <div className="ambient ambient-right" />
-
       <header className="hero hero-single panel">
         <div className="hero-copy hero-copy-wide">
-          <p className="eyebrow">Route-aware recommendations</p>
-          <h1>Trip Planner</h1>
+          <p className="eyebrow">Route-aware temperament planning</p>
+          <h1>Trip Temperament Planner</h1>
           <p className="hero-lede">
-            A guided trip planner that moves through locations, travel timing, meals, stops, and preferences one step at a
-            time so the route is easier to shape before you build the itinerary.
+            Build a trip from the human texture first: pace, appetite, energy, comfort, scenery, and room for surprise. Then
+            tune the proposed itinerary without starting over.
           </p>
 
           <div className="hero-step-strip">
@@ -932,41 +1337,77 @@ function App() {
 
       <main className="content-grid">
         <section className="panel builder-panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">Step {activeStepIndex + 1}</p>
-              <h2>{activeStep.title}</h2>
-              <p className="supporting-copy wizard-description">{activeStep.description}</p>
-            </div>
-            <div className="builder-step-status">
-              <ActiveStepIcon size={18} />
-              <span className="mode-chip muted">
-                {activeStepIndex + 1} of {WIZARD_STEPS.length}
-              </span>
-            </div>
-          </div>
+          {builderCollapsed ? (
+            <>
+              <div className="panel-head">
+                <div>
+                  <p className="eyebrow">Itinerary active</p>
+                  <h2>Trip inputs are hidden</h2>
+                  <p className="supporting-copy wizard-description">
+                    The itinerary view already reflects your route, timing, and preferences. Reopen the builder only when you want to change the inputs.
+                  </p>
+                </div>
+                <div className="builder-step-status">
+                  <span className="mode-chip muted">Builder collapsed</span>
+                </div>
+              </div>
 
-          {renderBuilderStep()}
+              <div className="builder-collapsed">
+                <div className="info-banner">
+                  Click any step above to reopen the wizard, or jump straight back into a specific part of the trip setup.
+                </div>
+                <div className="builder-collapsed-actions">
+                  <button className="secondary-button" type="button" onClick={() => goToStep('temperament')}>
+                    Edit questions
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => goToStep('locations')}>
+                    Jump to locations
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => goToStep('travel')}>
+                    Jump to travel
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="panel-head">
+                <div>
+                  <p className="eyebrow">Step {activeStepIndex + 1}</p>
+                  <h2>{activeStep.title}</h2>
+                  <p className="supporting-copy wizard-description">{activeStep.description}</p>
+                </div>
+                <div className="builder-step-status">
+                  <ActiveStepIcon size={18} />
+                  <span className="mode-chip muted">
+                    {activeStepIndex + 1} of {WIZARD_STEPS.length}
+                  </span>
+                </div>
+              </div>
 
-          {activeStepId === 'review' && errorMessage ? <div className="error-banner wizard-banner">{errorMessage}</div> : null}
-          {activeStepId === 'review' && googleError && providerPreference !== 'demo' ? (
-            <div className="warning-pill wizard-banner">{googleError}</div>
-          ) : null}
+              {renderBuilderStep()}
 
-          <div className="wizard-footer">
-            <button className="ghost-button" type="button" onClick={goToPreviousStep} disabled={activeStepIndex === 0}>
-              Back
-            </button>
-            {nextStep ? (
-              <button className="primary-button" type="button" onClick={goToNextStep} disabled={!canAdvanceToNextStep}>
-                Continue to {nextStep.label}
-              </button>
-            ) : (
-              <button className="primary-button" type="button" onClick={handlePlanTrip} disabled={planningState === 'planning'}>
-                {planningState === 'planning' ? 'Planning route...' : 'Build itinerary'}
-              </button>
-            )}
-          </div>
+              {activeStepId === 'review' && errorMessage ? <div className="error-banner wizard-banner">{errorMessage}</div> : null}
+              {activeStepId === 'review' && googleError && providerPreference !== 'demo' ? (
+                <div className="warning-pill wizard-banner">{googleError}</div>
+              ) : null}
+
+              <div className="wizard-footer">
+                <button className="ghost-button" type="button" onClick={goToPreviousStep} disabled={activeStepIndex === 0}>
+                  Back
+                </button>
+                {nextStep ? (
+                  <button className="primary-button" type="button" onClick={goToNextStep} disabled={!canAdvanceToNextStep}>
+                    Continue to {nextStep.label}
+                  </button>
+                ) : (
+                  <button className="primary-button" type="button" onClick={handlePlanTrip} disabled={planningState === 'planning'}>
+                    {planningState === 'planning' ? 'Planning route...' : 'Build itinerary'}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </section>
 
         <aside className="sidebar-stack">
@@ -979,9 +1420,7 @@ function App() {
               <span className="mode-chip muted">{Math.round(progressPercent)}%</span>
             </div>
 
-            <div className="guide-progress-track" aria-hidden="true">
-              <div className={`guide-progress-fill step-${activeStepIndex + 1}`} />
-            </div>
+            <MeterBar className="guide-progress-track" value={progressPercent} decorative />
 
             <div className="guide-summary-grid">
               <article>
@@ -995,6 +1434,10 @@ function App() {
               <article>
                 <span className="stats-label">Departure</span>
                 <strong>{departureLabel}</strong>
+              </article>
+              <article>
+                <span className="stats-label">Trip DNA</span>
+                <strong>{temperamentLabel}</strong>
               </article>
               <article>
                 <span className="stats-label">Meals</span>
@@ -1015,27 +1458,197 @@ function App() {
             </div>
 
             <div className="guide-focus-card">
+              <span className="stats-label">Fingerprint</span>
+              <div className="sidebar-meter-list">
+                {tripFingerprint.map((metric) => (
+                  <div className="sidebar-meter-row" key={metric.label}>
+                    <span>{metric.label}</span>
+                    <MeterBar className="mini-meter" value={metric.value} decorative />
+                    <strong>{metric.value}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="guide-focus-card">
               <span className="stats-label">Planner source</span>
               <strong>{renderProviderStatus()}</strong>
               <p>Change this in the travel step if you want to switch between Google and the demo provider.</p>
             </div>
           </section>
 
-          <SavedTripsPanel trips={savedTrips} onOpen={handleOpenSavedTrip} onDelete={handleDeleteTrip} />
+          {googleTroubleshootingIssue && providerPreference !== 'demo' ? (
+            <GoogleTroubleshootingPanel
+              issue={googleTroubleshootingIssue}
+              providerPreference={providerPreference === 'auto' ? 'auto' : 'google'}
+            />
+          ) : null}
+
+          <SavedTripsPanel trips={savedTrips} notice={savedTripsNotice} onOpen={handleOpenSavedTrip} onDelete={handleDeleteTrip} />
         </aside>
       </main>
 
       {currentPlan ? (
         <section className="workspace-grid">
+          <section className="panel tune-panel">
+            <div className="panel-head compact">
+              <div>
+                <p className="eyebrow">Fine tune</p>
+                <h2>Trip controls</h2>
+              </div>
+              <div className="summary-head-actions">
+                <button className="ghost-button" type="button" onClick={() => goToStep('temperament')}>
+                  <ListChecks size={16} />
+                  Edit questions
+                </button>
+                <button className="primary-button" type="button" onClick={handlePlanTrip} disabled={planningState === 'planning'}>
+                  <RefreshCw size={16} />
+                  {planningState === 'planning' ? 'Rebuilding...' : 'Rebuild itinerary'}
+                </button>
+              </div>
+            </div>
+
+            <div className="tune-grid">
+              <article className="tune-card">
+                <label className="field-shell compact-field" htmlFor="tuneDetour">
+                  <span className="priority-label-row">
+                    <span className="field-label">Detour ceiling</span>
+                    <span className="inline-value">{request.detourToleranceMinutes} min</span>
+                  </span>
+                  <input
+                    id="tuneDetour"
+                    className="range-input"
+                    type="range"
+                    min={5}
+                    max={45}
+                    step={1}
+                    value={request.detourToleranceMinutes}
+                    onChange={(event) => updateRequest({ detourToleranceMinutes: Number(event.target.value) })}
+                  />
+                </label>
+                <label className="field-shell compact-field" htmlFor="tuneCadence">
+                  <span className="priority-label-row">
+                    <span className="field-label">Break cadence</span>
+                    <span className="inline-value">{preferences.idealBreakCadenceMinutes} min</span>
+                  </span>
+                  <input
+                    id="tuneCadence"
+                    className="range-input"
+                    type="range"
+                    min={75}
+                    max={240}
+                    step={15}
+                    value={preferences.idealBreakCadenceMinutes}
+                    onChange={(event) => updatePreferences({ idealBreakCadenceMinutes: Number(event.target.value) })}
+                  />
+                </label>
+              </article>
+
+              <article className="tune-card">
+                <label className="field-shell compact-field" htmlFor="tuneFood">
+                  <span className="priority-label-row">
+                    <span className="field-label">Local food</span>
+                    <span className="inline-value">{preferences.foodPriority}</span>
+                  </span>
+                  <input
+                    id="tuneFood"
+                    className="range-input"
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={preferences.foodPriority}
+                    onChange={(event) => updatePreferences({ foodPriority: Number(event.target.value) })}
+                  />
+                </label>
+                <label className="field-shell compact-field" htmlFor="tuneScenery">
+                  <span className="priority-label-row">
+                    <span className="field-label">Scenery</span>
+                    <span className="inline-value">{preferences.sceneryPriority}</span>
+                  </span>
+                  <input
+                    id="tuneScenery"
+                    className="range-input"
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={preferences.sceneryPriority}
+                    onChange={(event) => updatePreferences({ sceneryPriority: Number(event.target.value) })}
+                  />
+                </label>
+              </article>
+
+              <article className="tune-card">
+                <label className="field-shell compact-field" htmlFor="tuneComfort">
+                  <span className="priority-label-row">
+                    <span className="field-label">Comfort</span>
+                    <span className="inline-value">{preferences.comfortPriority}</span>
+                  </span>
+                  <input
+                    id="tuneComfort"
+                    className="range-input"
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={preferences.comfortPriority}
+                    onChange={(event) => updatePreferences({ comfortPriority: Number(event.target.value) })}
+                  />
+                </label>
+                <label className="field-shell compact-field" htmlFor="tuneSurprise">
+                  <span className="priority-label-row">
+                    <span className="field-label">Surprise</span>
+                    <span className="inline-value">{preferences.surprisePriority}</span>
+                  </span>
+                  <input
+                    id="tuneSurprise"
+                    className="range-input"
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={preferences.surprisePriority}
+                    onChange={(event) => updatePreferences({ surprisePriority: Number(event.target.value) })}
+                  />
+                </label>
+              </article>
+
+              <article className="tune-card tune-category-card">
+                <span className="field-label">Stop mix</span>
+                <div className="tune-category-list">
+                  {TUNE_CATEGORIES.map((category) => {
+                    const Icon = CATEGORY_ICONS[category];
+                    const count = request.activeCategories.includes(category) ? request.desiredStopsByCategory[category] ?? 1 : 0;
+
+                    return (
+                      <div className="tune-category-row" key={category}>
+                        <span className="tune-category-name">
+                          <Icon size={15} />
+                          {CATEGORY_LABELS[category]}
+                        </span>
+                        <div className="stepper">
+                          <button type="button" onClick={() => reduceCategory(category)} disabled={count <= 0} aria-label={`Reduce ${CATEGORY_LABELS[category]}`}>
+                            <Minus size={14} />
+                          </button>
+                          <span>{count}</span>
+                          <button type="button" onClick={() => boostCategory(category)} disabled={count >= 3} aria-label={`Add ${CATEGORY_LABELS[category]}`}>
+                            <Plus size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </article>
+            </div>
+          </section>
+
           <div className="workspace-top-row">
-            <section className="panel workspace-summary-panel">
+            <section className="panel workspace-summary-panel" ref={itinerarySummaryRef}>
               <div className="panel-head compact">
                 <div>
                   <p className="eyebrow">Current itinerary</p>
                   <h2>{`${currentPlan.request.origin.label} to ${currentPlan.request.destination.label}`}</h2>
                 </div>
                 <div className="summary-head-actions">
-                  <span className="mode-chip">{effectiveProviderMode === 'google' ? 'Google-backed' : 'Client demo'}</span>
+                  <span className="mode-chip">{currentPlan.providerMode === 'google' ? 'Google-backed' : 'Client demo'}</span>
                   <button className="secondary-button" type="button" onClick={handleSaveTrip}>
                     <Bookmark size={16} />
                     Save trip
@@ -1060,6 +1673,13 @@ function App() {
                   <span className="stats-label">Planned arrival</span>
                   <strong>{formatClock(currentPlan.summary.plannedArrivalAt)}</strong>
                 </article>
+              </div>
+              <div className="summary-fingerprint">
+                {tripFingerprint.map((metric) => (
+                  <span className="mode-chip muted" key={metric.label}>
+                    {metric.label} {metric.value}
+                  </span>
+                ))}
               </div>
               <p className="supporting-copy route-note">{currentPlan.route.summaryText}</p>
               {currentPlan.warnings.length > 0 && (
@@ -1091,6 +1711,15 @@ function App() {
             <div className="timeline-list">
               {currentPlan.recommendations.map((recommendation) => {
                 const Icon = CATEGORY_ICONS[recommendation.category];
+                const slot = currentPlan.slots.find((item) => item.id === recommendation.slotId);
+                const scoreRows = [
+                  { label: 'Quality', value: recommendation.score.qualityScore },
+                  { label: 'Timing', value: recommendation.score.slotFit },
+                  { label: 'Taste', value: recommendation.score.preferenceFit },
+                  { label: 'Open', value: recommendation.score.openNowFit },
+                  { label: 'Low detour', value: 1 - recommendation.score.detourPenalty },
+                ];
+
                 return (
                   <article
                     className={`timeline-card ${recommendation.status === 'pinned' ? 'pinned' : ''} ${recommendation.status === 'skipped' ? 'skipped' : ''}`}
@@ -1115,7 +1744,18 @@ function App() {
                         <span>{recommendation.candidate.avgRating.toFixed(1)} stars</span>
                         <span>{recommendation.candidate.ratingCount} reviews</span>
                         <span>{recommendation.candidate.detourMinutes} min detour</span>
+                        <span>{Math.round(recommendation.candidate.routeProgressPercent)}% along route</span>
+                        {slot ? <span>{formatDurationMinutes(slot.expectedDwellMinutes)} dwell</span> : null}
                         <span>Score {recommendation.score.totalScore.toFixed(2)}</span>
+                      </div>
+                      <div className="score-breakdown-grid">
+                        {scoreRows.map((row) => (
+                          <div className="score-row" key={row.label}>
+                            <span>{row.label}</span>
+                            <MeterBar className="mini-meter" value={clampPercent(row.value * 100)} decorative />
+                            <strong>{Math.round(row.value * 100)}</strong>
+                          </div>
+                        ))}
                       </div>
                       <div className="reason-chip-row">
                         {recommendation.explanation.shortReasons.map((reason) => (

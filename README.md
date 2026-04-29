@@ -1,92 +1,50 @@
 # Trip Planner
 
-A route-aware trip planner that recommends stops against the trip timeline instead of only showing places near a location. This implementation is static-first so it can be deployed to GitHub Pages, while preserving a clear upgrade path to a richer server-backed architecture later.
+Trip Planner is a route-aware road trip planner that recommends when and where to stop across the full drive, not just what happens to be near a single map pin.
 
-## What this build does today
+Give it an origin, a destination, a departure time, and a travel style, and it builds an itinerary that balances meals, breaks, scenery, comfort, and detour tolerance across the entire trip.
+
+## Build From Source
+
+Before running the app locally, create `.env.local` from [.env.example](.env.example).
+
+- Set `VITE_GOOGLE_MAPS_API_KEY` only if you want Google-backed autocomplete, map rendering, and route search.
+- Leave `VITE_GOOGLE_MAPS_API_KEY` blank if you want to use the built-in demo provider.
+
+Full local build steps are in [docs/local-setup.md](docs/local-setup.md).
+
+## What It Does
 
 - Builds one-way and same-day round-trip driving itineraries
-- Plans meal slots against departure time and meal windows
-- Adds coffee, rest, scenic, hike, attraction, gas, EV charging, and surprise stops
-- Ranks candidates by weighted ratings, review count, detour cost, slot fit, daylight fit, open-hours fit, and preference fit
-- Explains why each stop was selected
-- Supports pin, skip, and replace interactions
-- Saves trips and transparent preference learning in localStorage
-- Runs in two modes:
-  - Demo planner: fully client-side, no external API required
-  - Google browser mode: map, autocomplete, driving route, and browser-side place search
+- Plans meal stops against departure time and meal windows
+- Mixes in coffee, rest, scenic, hike, attraction, gas, EV charging, and surprise stops
+- Ranks stop candidates against route fit, detour cost, ratings, daylight, opening hours, and trip preferences
+- Explains why each stop was chosen
+- Lets you pin, skip, save, and replace recommendations as you tune the plan
+- Learns from saved trips to gradually reflect recurring preferences
 
-## GitHub Pages viability
+## Why It Feels Different
 
-Yes, this app can be deployed to GitHub Pages.
+Most trip tools answer "what is nearby?" Trip Planner answers "what fits this part of the drive?"
 
-### What works without a server
+Instead of treating every stop the same, it reasons about route progress, likely energy dips, meal timing, and how much extra time each detour is actually worth. The result is a plan that feels paced, not just geographically clustered.
 
-- The entire UI and planning engine
-- Local persistence with localStorage
-- Demo mode with deterministic route and place generation
-- Google browser mode if you provide a browser-restricted Google Maps JavaScript API key
-- Same-day round trips using the browser Directions service
+## Experience
 
-### What degrades without a server
+Trip Planner combines:
 
-- API keys are public browser keys, not secret server keys
-- Saved trips live only in the current browser unless you add a backend
-- The along-route search is an approximation built from browser-side text search near sampled route anchors
-- The static app cannot safely support Yelp enrichment or other secret-bearing providers
-- The static app does not provide shared accounts, sync, or durable cross-device storage
+- Timeline-first trip building
+- Route-aware stop recommendations
+- Adjustable planning modes and detour tolerance
+- Interactive itinerary refinement after the initial plan is built
+- A map-and-cards workflow that keeps the route, timing, and stops aligned
 
-### When to split into two components
+## Built For
 
-Add a backend when you need any of the following:
-
-- Secure provider keys and quotas beyond browser-only usage
-- Google Routes plus Places REST integration with stricter field masking and better route-biased search
-- Yelp or other enrichment providers
-- User accounts and cross-device saved trips
-- Re-optimization and provider normalization on the server
-- Auditable provider snapshot retention and expiry enforcement
-
-## Local development
-
-1. Install dependencies.
-
-```bash
-npm install
-```
-
-2. Start the dev server.
-
-```bash
-npm run dev
-```
-
-3. Optional: enable Google browser mode by copying `.env.example` to `.env` and setting `VITE_GOOGLE_MAPS_API_KEY`.
-
-The key must be a browser-restricted Google Maps JavaScript API key. It will be shipped to the browser in the static build, so treat it as public and lock it down by referrer.
-
-## GitHub Pages deployment
-
-The repo includes a Pages workflow at [.github/workflows/deploy-pages.yml](.github/workflows/deploy-pages.yml).
-
-### Required repository setup
-
-1. Enable GitHub Pages in the repository settings and choose GitHub Actions as the source.
-2. Add a repository variable or secret named `VITE_GOOGLE_MAPS_API_KEY` if you want Google browser mode in production.
-3. Restrict that Google key to your GitHub Pages domain or custom domain.
-4. If the repo name changes, update `VITE_PUBLIC_BASE` or the Vite `base` setting.
-
-### Manual deployment
-
-```bash
-npm run build
-npm run deploy
-```
-
-## Static architecture notes
-
-The technical design originally assumed a server-owned provider pipeline. The current implementation adapts that design to a static environment by moving the ranking engine, slot planner, daylight logic, explanation generation, and local re-optimization into the browser.
-
-The main differences from the ideal two-component architecture are documented in [docs/deployment-notes.md](docs/deployment-notes.md).
+- Day trips with a few well-timed breaks
+- Longer drives that need reliable meal planning
+- Scenic drives where memorable detours should still feel intentional
+- Travelers who want a plan they can keep editing instead of a fixed directions printout
 
 ## Core files
 

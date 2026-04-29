@@ -3,11 +3,12 @@ import { formatDateLabel, formatDurationMinutes } from '../lib/utils';
 
 interface SavedTripsPanelProps {
   trips: PlannedTrip[];
+  notice?: string | null;
   onOpen: (trip: PlannedTrip) => void;
   onDelete: (tripId: string) => void;
 }
 
-export function SavedTripsPanel({ trips, onOpen, onDelete }: SavedTripsPanelProps) {
+export function SavedTripsPanel({ trips, notice, onOpen, onDelete }: SavedTripsPanelProps) {
   return (
     <section className="panel saved-trips-panel">
       <div className="panel-head compact">
@@ -18,8 +19,10 @@ export function SavedTripsPanel({ trips, onOpen, onDelete }: SavedTripsPanelProp
         <span className="mode-chip muted">{trips.length} saved</span>
       </div>
 
+      {notice ? <div className="info-banner archive-notice">{notice}</div> : null}
+
       {trips.length === 0 ? (
-        <p className="supporting-copy">Saved trips stay in localStorage on this device in the GitHub Pages version.</p>
+        <p className="supporting-copy">Saved trips stay in localStorage on this device. Expired Google-backed trips are removed automatically.</p>
       ) : (
         <div className="saved-trip-list">
           {trips.map((trip) => (

@@ -19,6 +19,10 @@ export type ItineraryMode =
   | 'food_focused'
   | 'experience_focused';
 
+export type TravelParty = 'solo' | 'couple' | 'family' | 'friends';
+export type TripTemperament = 'efficient' | 'balanced' | 'local_texture' | 'scenic_collector' | 'comfort_buffer';
+export type EnergyCurve = 'early_peak' | 'steady' | 'late_riser';
+export type StopPacing = 'quick_hits' | 'balanced' | 'linger';
 export type SlotKind = 'meal' | 'break' | 'outdoor' | 'attraction' | 'fuel' | 'surprise';
 export type ProviderMode = 'google' | 'demo';
 export type StopStatus = 'selected' | 'pinned' | 'skipped';
@@ -46,6 +50,15 @@ export interface LearnedPreferences {
 
 export interface PreferenceProfile {
   budgetLevel?: 'low' | 'medium' | 'high';
+  travelParty: TravelParty;
+  tripTemperament: TripTemperament;
+  energyCurve: EnergyCurve;
+  stopPacing: StopPacing;
+  foodPriority: number;
+  sceneryPriority: number;
+  comfortPriority: number;
+  surprisePriority: number;
+  quietPriority: number;
   cuisines: string[];
   attractionTags: string[];
   hikingInterest?: 'none' | 'light' | 'moderate' | 'high';

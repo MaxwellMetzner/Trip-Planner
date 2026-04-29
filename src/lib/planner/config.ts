@@ -8,6 +8,15 @@ export const DEFAULT_MEAL_WINDOWS = {
 
 export const DEFAULT_PREFERENCES: PreferenceProfile = {
   budgetLevel: 'medium',
+  travelParty: 'couple',
+  tripTemperament: 'balanced',
+  energyCurve: 'steady',
+  stopPacing: 'balanced',
+  foodPriority: 62,
+  sceneryPriority: 58,
+  comfortPriority: 50,
+  surprisePriority: 36,
+  quietPriority: 48,
   cuisines: [],
   attractionTags: [],
   hikingInterest: 'moderate',
